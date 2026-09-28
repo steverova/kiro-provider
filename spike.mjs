@@ -1,11 +1,11 @@
 // Spike: validate we can reuse the plugin's RequestHandler standalone.
-import { loadConfig } from '@zhafron/opencode-kiro-auth/dist/plugin/config/index.js';
-import { AccountCache } from '@zhafron/opencode-kiro-auth/dist/infrastructure/database/account-cache.js';
-import { AccountRepository } from '@zhafron/opencode-kiro-auth/dist/infrastructure/database/account-repository.js';
-import { AccountManager } from '@zhafron/opencode-kiro-auth/dist/plugin/accounts.js';
-import { AuthHandler } from '@zhafron/opencode-kiro-auth/dist/core/auth/auth-handler.js';
-import { RequestHandler } from '@zhafron/opencode-kiro-auth/dist/core/request/request-handler.js';
-import { buildModelRegistry } from '@zhafron/opencode-kiro-auth/dist/plugin/model-registry.js';
+import { loadConfig } from './vendor/kiro-auth/dist/plugin/config/index.js';
+import { AccountCache } from './vendor/kiro-auth/dist/infrastructure/database/account-cache.js';
+import { AccountRepository } from './vendor/kiro-auth/dist/infrastructure/database/account-repository.js';
+import { AccountManager } from './vendor/kiro-auth/dist/plugin/accounts.js';
+import { AuthHandler } from './vendor/kiro-auth/dist/core/auth/auth-handler.js';
+import { RequestHandler } from './vendor/kiro-auth/dist/core/request/request-handler.js';
+import { buildModelRegistry } from './vendor/kiro-auth/dist/plugin/model-registry.js';
 
 const toast = (m, v) => console.log(`[toast:${v}] ${m}`);
 

@@ -1,9 +1,8 @@
 // Kiro OpenAI-compatible bridge for OpenCode V2.
 //
-// Reuses @zhafron/opencode-kiro-auth's internals (auth, account rotation,
-// token refresh, request/stream translation) and exposes a local
-// OpenAI-compatible API that OpenCode's @opencode/ai/providers/openai-compatible
-// runtime can talk to.
+// Vendored Kiro internals (auth, account rotation, token refresh, request and
+// stream translation) — see vendor/kiro-auth. Exposes a local OpenAI-compatible
+// API that OpenCode's @opencode/ai/providers/openai-compatible runtime talks to.
 //
 // The HTTP port is bound first so a duplicate instance exits before it touches
 // the shared SQLite database. Provider internals initialize lazily on the first
@@ -17,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 // The plugin internals open the shared SQLite database at module import time,
 // so they are imported lazily inside init(), after this process owns the port.
-const PKG = '@zhafron/opencode-kiro-auth/dist';
+const PKG = './vendor/kiro-auth/dist';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.KIRO_BRIDGE_PORT || 4141);

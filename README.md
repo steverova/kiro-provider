@@ -194,6 +194,7 @@ Run `opencode reload`, then connect your API key as in Authentication.
 | --- | --- |
 | `index.mjs` | The OpenCode V2 plugin: registers the provider + integration, starts the bridge. |
 | `server.mjs` | Local OpenAI-compatible bridge; supports API-key and OAuth auth. |
+| `vendor/kiro-auth/` | Vendored Kiro internals (MIT, from `@zhafron/opencode-kiro-auth`). |
 | `models.json` | Model metadata (generated), so the plugin never imports SQLite. |
 | `gen-models.mjs` | Regenerates `models.json` from the Kiro registry. |
 | `login.mjs` | Runs `opencode auth login kiro --method key`. |
@@ -222,9 +223,11 @@ The popular plugin `@zhafron/opencode-kiro-auth` is written for the **V1** plugi
 API and **does not load in OpenCode V2**
 (`Plugin must export a default definition with an id and an effect or setup function`).
 
-Instead of porting it, this project **reuses its internals** (auth, account
-rotation, token refresh, request/stream translation) behind a small local
-OpenAI-compatible bridge, and wires it into OpenCode with a native V2 plugin.
+This project **vendors its internals** under `vendor/kiro-auth` (MIT, by
+tickernelz) — auth, account rotation, token refresh, request/stream translation —
+behind a small local OpenAI-compatible bridge, and wires it into OpenCode with a
+native V2 plugin. There is no runtime dependency on the original package and no
+build step.
 
 ## Security
 

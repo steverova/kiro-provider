@@ -13,6 +13,7 @@
     "server.mjs",
     "key.mjs",
     "login.mjs",
+    "vendor",
     "README.md"
   ],
   "scripts": {
@@ -31,6 +32,9 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "@zhafron/opencode-kiro-auth": "^2.0.0"
+    "@aws/codewhisperer-streaming-client": "^1.0.45",
+    "libsql": "^0.5.29",
+    "proper-lockfile": "^4.1.2",
+    "zod": "^3.25.76"
   }
 }

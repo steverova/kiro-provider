@@ -1,4 +1,4 @@
-// Regenerates models.json from @zhafron/opencode-kiro-auth's registry.
+// Regenerates models.json from the vendored Kiro registry (vendor/kiro-auth).
 //
 // models.json is committed so the OpenCode plugin (index.mjs) can register the
 // provider without importing the Kiro package at runtime — importing it opens
@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildModelRegistry } from '@zhafron/opencode-kiro-auth/dist/plugin/model-registry.js';
+import { buildModelRegistry } from './vendor/kiro-auth/dist/plugin/model-registry.js';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const registry = buildModelRegistry();
