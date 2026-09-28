@@ -4,9 +4,9 @@ An **OpenCode V2 plugin** that adds the **AWS Kiro (CodeWhisperer)** models
 (Claude Sonnet/Opus/Haiku, DeepSeek, GLM, MiniMax, Qwen) to OpenCode as
 `kiro/<model>`.
 
-One install does everything: the plugin **registers the `kiro` provider** and
-**starts a local bridge** that talks to Kiro. Works on **Windows, Linux, and
-macOS**.
+One install does everything: the plugin **registers the `kiro` provider**, adds
+the **`kiro` auth integration**, and **starts a local bridge** that talks to
+Kiro. Works on **Windows, Linux, and macOS**.
 
 ```
 OpenCode V2 ──(OpenAI /v1/chat/completions)──▶ bridge (127.0.0.1:4141)
@@ -20,10 +20,10 @@ OpenCode V2 ──(OpenAI /v1/chat/completions)──▶ bridge (127.0.0.1:4141)
 # 1. Install the plugin (only appends one entry to your config)
 opencode plugin add github:steverova/kiro-provider
 
-# 2. Sign in to Kiro (see "Authentication" below)
-kiro-cli login
+# 2. Connect your Kiro API key (ksk_...)
+opencode auth login kiro --method key
 
-# 3. Reload OpenCode and pick a kiro/... model
+# 3. Reload and pick a kiro/... model
 opencode reload
 ```
 
@@ -32,7 +32,9 @@ opencode reload
 - **Node.js 20.11+** (the plugin spawns the bridge with `node`; override with
   `KIRO_NODE`).
 - **OpenCode V2**.
-- A **Kiro account** you can sign in with (see below).
+- A **Kiro API key** (`ksk_...`) **or** a Kiro account in `kiro.db` (see
+  Authentication). API keys are available to Kiro Pro, Pro+, Pro Max, and Power
+  subscribers; generate one at <https://app.kiro.dev> → **API Keys**.
 
 ## Install
 
@@ -50,60 +52,68 @@ opencode plugin list      # shows: kiro.provider  <commit>  https://github.com/s
 ```
 
 Once loaded, the plugin registers the `kiro` provider by itself, so there is no
-manual `/connect` step. Pick a model with `/models` — you'll see `kiro/...`.
+manual provider setup. Pick a model with `/models` — you'll see `kiro/...`.
 
 ## Authentication
 
-There are **two** credentials. Only the first one needs your attention.
+The bridge can authenticate to Kiro in two ways. **Option A (API key)** is
+recommended.
 
-### 1. Your Kiro account (required)
+### Option A — Kiro API key (recommended)
 
-The bridge talks to Kiro using the accounts stored in **`kiro.db`**:
+1. Generate a key at <https://app.kiro.dev> → **API Keys** (Pro/Pro+/Pro
+   Max/Power).
+2. Connect it:
+
+   ```bash
+   opencode auth login kiro --method key
+   ```
+
+   Paste your `ksk_...` key when prompted. In the TUI you can use `/connect` →
+   **AWS Kiro** → *Manually enter API Key* instead.
+
+3. Reload so the plugin picks it up:
+
+   ```bash
+   opencode reload
+   ```
+
+The plugin reads the stored key, writes it next to the package
+(`kiro-api-key.txt`), and the bridge uses it for every request — no `kiro.db`
+needed. Verify:
+
+```bash
+curl http://127.0.0.1:4141/health
+# {"status":"ok","ready":true,"auth":"api_key","accounts":null,"region":"api-key"}
+```
+
+`"auth":"api_key"` means the key is in use. You can also set the key with the
+`KIRO_API_KEY` environment variable instead of logging in (the plugin passes the
+environment through to the bridge).
+
+### Option B — OAuth accounts (fallback)
+
+Without an API key, the bridge can use the accounts in **`kiro.db`**:
 
 | OS | Path |
 | --- | --- |
 | Windows | `%APPDATA%\opencode\kiro.db` |
 | Linux / macOS | `~/.config/opencode/kiro.db` |
 
-The easiest way to fill it: **sign in with the Kiro CLI**, and let the plugin
-import it automatically.
-
-1. Install the Kiro CLI, then run:
-   ```bash
-   kiro-cli login
-   ```
-   Complete the browser sign-in (AWS Builder ID / IAM Identity Center).
-
-2. That's it. On start, the bridge runs a Kiro CLI sync (enabled by default via
-   `auto_sync_kiro_cli`) and copies the tokens from the Kiro CLI database
-   (`%APPDATA%\kiro-cli\data.sqlite3` on Windows,
-   `~/.local/share/kiro-cli/data.sqlite3` on Linux,
-   `~/Library/Application Support/kiro-cli/data.sqlite3` on macOS) into
-   `kiro.db`.
-
-Accounts already present in `kiro.db` (for example, from using the V1 plugin
-once) are used directly and need no extra step.
-
-**Check it worked:** start OpenCode, then:
+Fill it by signing in with the **Kiro CLI** (`kiro-cli login`); on start the
+bridge syncs the tokens from the Kiro CLI database into `kiro.db` (enabled by
+default via `auto_sync_kiro_cli`). Accounts already in `kiro.db` are used
+directly.
 
 ```bash
 curl http://127.0.0.1:4141/health
-# {"status":"ok","ready":true,"accounts":1,"region":"us-east-1"}
+# {"status":"ok","ready":true,"auth":"accounts","accounts":1,"region":"us-east-1"}
 ```
 
-`accounts` > 0 means Kiro is authenticated. If it is `0`, the CLI sign-in did
-not reach the expected database — see Troubleshooting.
-
-### 2. The local bridge key (automatic)
-
-The bridge requires a bearer key on every `/v1/*` request (except `/health`).
-The plugin **generates this key on first run**, stores it in `api-key.txt` next
-to the installed package, and passes it to both the provider and the bridge. No
-action needed. To use your own key instead, put it in `api-key.txt` (one per
-line, for example your `ksk_...` Kiro key).
-
-> The API key only gates access to the local bridge. It is **not** your Kiro
-> login — that is the account in `kiro.db`.
+> The bridge also requires a bearer key on every `/v1/*` request (except
+> `/health`). The plugin **generates this key on first run**, stores it in
+> `api-key.txt`, and injects it into the provider — no action needed. It is a
+> local gate, unrelated to your Kiro API key.
 
 ## Configuration
 
@@ -122,9 +132,10 @@ Environment variables (optional):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `KIRO_API_KEY` | – | Kiro API key (`ksk_...`); alternative to `auth login`. |
 | `KIRO_BRIDGE_PORT` | `4141` | Bridge port; must match the provider `baseURL`. |
 | `KIRO_BRIDGE_HOST` | `127.0.0.1` | Bind address. |
-| `KIRO_BRIDGE_TOKEN` | – | Extra accepted key(s), comma/space separated. |
+| `KIRO_BRIDGE_TOKEN` | – | Extra accepted bridge key(s), comma/space separated. |
 | `KIRO_NODE` | `node` | Node binary used to spawn the bridge. |
 | `KIROCLI_DB_PATH` | – | Override the Kiro CLI database path used for sync. |
 
@@ -160,17 +171,19 @@ every other setting — it only appends one entry):
 }
 ```
 
-Run `opencode reload`. `npm start` runs the bridge manually if you don't want
-the plugin to spawn it.
+Run `opencode reload`, then connect your API key as in Authentication.
+`npm start` runs the bridge manually if you don't want the plugin to spawn it.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | Provider missing / 0 models | `opencode reload`, then check `opencode plugin list`. |
-| `/health` shows `accounts: 0` | Sign in with `kiro-cli login`, or ensure `kiro.db` has accounts. Check `bridge.log`. |
-| `Kiro Error: 400/403` | Account problem in `kiro.db`. Sign in again (`kiro-cli login`); a Pro account may need a `profileArn`. |
-| `401 Unauthorized` | The key the provider sends is not in `api-key.txt`. Add it there or run `npm run key`. |
+| `No accounts` / request errors | Connect a key: `opencode auth login kiro --method key`, then `opencode reload`. Check `/health` reports `"auth":"api_key"`. |
+| `/health` shows `accounts: 0` (OAuth) | Sign in with `kiro-cli login`, or set `KIROCLI_DB_PATH` if your Kiro CLI database is elsewhere. Check `bridge.log`. |
+| `Kiro Error: 400/403` (API key) | The key must match its region and be entitled. Check `default_region` and regenerate the key. |
+| `Kiro Error: 400/403` (OAuth) | Account problem in `kiro.db`. Sign in again (`kiro-cli login`); a Pro account may need a `profileArn`. |
+| `Integration not found: kiro` | The plugin is not loaded. `opencode plugin list`, then `opencode reload`. |
 | Bridge unreachable | `curl http://127.0.0.1:4141/health`; check `bridge.log`. |
 | Autostart does nothing | Ensure `node` is on PATH or set `KIRO_NODE`; check `bridge.log`. |
 | `database is locked` | Two bridges ran at once. The bridge binds the port first, so duplicates exit early; kill stray `node server.mjs` processes if needed. |
@@ -179,12 +192,29 @@ the plugin to spawn it.
 
 | File | Role |
 | --- | --- |
-| `index.mjs` | The OpenCode V2 plugin: registers the provider, starts the bridge. |
-| `server.mjs` | Local OpenAI-compatible bridge backed by the Kiro plugin internals. |
+| `index.mjs` | The OpenCode V2 plugin: registers the provider + integration, starts the bridge. |
+| `server.mjs` | Local OpenAI-compatible bridge; supports API-key and OAuth auth. |
 | `models.json` | Model metadata (generated), so the plugin never imports SQLite. |
 | `gen-models.mjs` | Regenerates `models.json` from the Kiro registry. |
-| `key.mjs` / `login.mjs` | Print the bridge API key / run the OpenCode login helper. |
+| `login.mjs` | Runs `opencode auth login kiro --method key`. |
 | `spike.mjs` | Quick check that the plugin internals work standalone. |
+
+## How it works
+
+- On setup, the plugin calls `ctx.provider.transform` to add the `kiro` provider
+  (package `@opencode/ai/providers/openai-compatible`, `baseURL`
+  `http://127.0.0.1:4141/v1`) with all models from `models.json`.
+- It registers the `kiro` auth integration with a `key` method, so
+  `opencode auth login kiro --method key` (or `/connect`) can store a Kiro API
+  key.
+- It resolves the stored key, and probes `/health`; if the bridge is down it
+  spawns `server.mjs` detached (surviving OpenCode closing), appending output to
+  `bridge.log`.
+- The bridge calls Kiro's CodeWhisperer endpoint and speaks the OpenAI Chat
+  Completions API, including `reasoning_content` for thinking models.
+  - **API key:** sends `Authorization: Bearer <ksk_...>` with the
+    `tokentype: API_KEY` header.
+  - **OAuth:** rotates and refreshes the accounts in `kiro.db`.
 
 ## Why this exists
 
@@ -196,18 +226,10 @@ Instead of porting it, this project **reuses its internals** (auth, account
 rotation, token refresh, request/stream translation) behind a small local
 OpenAI-compatible bridge, and wires it into OpenCode with a native V2 plugin.
 
-- On setup, the plugin calls `ctx.provider.transform` to add the `kiro` provider
-  (package `@opencode/ai/providers/openai-compatible`, `baseURL`
-  `http://127.0.0.1:4141/v1`) with all models from `models.json`.
-- It then probes `/health` and, if the bridge is down, spawns `server.mjs`
-  detached (surviving OpenCode closing), appending output to `bridge.log`.
-- The bridge authenticates to Kiro with the accounts in `kiro.db` and speaks
-  the OpenAI Chat Completions API, including `reasoning_content` for thinking
-  models.
-
 ## Notes
 
-- `node_modules/`, `api-key.txt` and `bridge.log` are git-ignored. **Never
-  commit `api-key.txt`** — it holds your key.
+- `node_modules/`, `api-key.txt`, `kiro-api-key.txt` and `bridge.log` are
+  git-ignored. **Never commit `kiro-api-key.txt` or `api-key.txt`** — they hold
+  secrets.
 - Installing with `opencode plugin add` appends a single entry to your global
   `plugins` array; it never rewrites the rest of the configuration.

@@ -24,6 +24,75 @@ const PORT = Number(process.env.KIRO_BRIDGE_PORT || 4141);
 const HOST = process.env.KIRO_BRIDGE_HOST || '127.0.0.1';
 const START_DIR = process.env.KIRO_PROJECT_DIR || DIR;
 const KEY_PATH = path.join(DIR, 'api-key.txt');
+const API_KEY_PATH = path.join(DIR, 'kiro-api-key.txt');
+
+// Kiro headless API key (prefixed "ksk_"). When present, the bridge
+// authenticates to Kiro with it instead of OAuth accounts, so no kiro.db is
+// needed. Read fresh on every request so `opencode auth login kiro` takes
+// effect without restarting the bridge.
+function resolveApiKey() {
+  const fromEnv = (process.env.KIRO_API_KEY || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const fromFile = fs.readFileSync(API_KEY_PATH, 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch {}
+  return null;
+}
+
+// Lazily loaded dependencies for the API-key path. Kept out of init() so the
+// SQLite-backed OAuth path is never touched when a key is configured.
+let apiKeyDepsPromise = null;
+function loadApiKeyDeps() {
+  if (!apiKeyDepsPromise) {
+    apiKeyDepsPromise = (async () => {
+      const [configMod, requestMod, responseMod, sdk, registryMod] = await Promise.all([
+        import(`${PKG}/plugin/config/index.js`),
+        import(`${PKG}/plugin/request.js`),
+        import(`${PKG}/core/request/response-handler.js`),
+        import('@aws/codewhisperer-streaming-client'),
+        import(`${PKG}/plugin/model-registry.js`),
+      ]);
+      return {
+        config: configMod.loadConfig(START_DIR),
+        transformToSdkRequest: requestMod.transformToSdkRequest,
+        ResponseHandler: responseMod.ResponseHandler,
+        GenerateAssistantResponseCommand: sdk.GenerateAssistantResponseCommand,
+        CodeWhispererStreamingClient: sdk.CodeWhispererStreamingClient,
+        buildModelRegistry: registryMod.buildModelRegistry,
+      };
+    })();
+  }
+  return apiKeyDepsPromise;
+}
+
+// One client per region+key; the API key is region-scoped.
+const apiKeyClients = new Map();
+function apiKeyClient(deps, apiKey, region) {
+  const cacheKey = `${region}:${apiKey.slice(-8)}`;
+  const cached = apiKeyClients.get(cacheKey);
+  if (cached) return cached;
+  const client = new deps.CodeWhispererStreamingClient({
+    region,
+    endpoint: `https://q.${region}.amazonaws.com`,
+    token: () => Promise.resolve({ token: apiKey }),
+    maxAttempts: 3,
+    retryMode: 'standard',
+    customUserAgent: [['KiroIDE']],
+  });
+  // API keys require the tokentype header; without it Kiro rejects the bearer.
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      args.request.headers['tokentype'] = 'API_KEY';
+      args.request.headers['Origin'] = 'AI_EDITOR';
+      args.request.headers['x-amzn-kiro-agent-mode'] = 'vibe';
+      return next(args);
+    },
+    { step: 'build', name: 'apiKeyHeaders' },
+  );
+  apiKeyClients.set(cacheKey, client);
+  return client;
+}
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const toast = (message, variant) => {
@@ -130,6 +199,56 @@ function modelList(registry) {
   };
 }
 
+async function handleApiKeyChat(res, body, apiKey) {
+  const deps = await loadApiKeyDeps();
+  const parsed = JSON.parse(body);
+  const model = parsed.model || 'claude-sonnet-4-5';
+  const think =
+    model.endsWith('-thinking') || !!parsed.providerOptions?.thinkingConfig || !!parsed.thinkingConfig;
+  const budget =
+    parsed.providerOptions?.thinkingConfig?.thinkingBudget ||
+    parsed.thinkingConfig?.thinkingBudget ||
+    parsed.thinkingConfig?.budget_tokens ||
+    20000;
+  const region = deps.config.default_region || 'us-east-1';
+  const auth = {
+    access: apiKey,
+    expires: Date.now() + 31536000000,
+    authMethod: 'api_key',
+    region,
+    email: 'api-key',
+  };
+  const sdkPrep = deps.transformToSdkRequest(body, model, auth, think, budget, toast, {
+    effort: deps.config.effort,
+    autoEffortMapping: deps.config.auto_effort_mapping,
+  });
+  const client = apiKeyClient(deps, apiKey, sdkPrep.region || region);
+  const command = new deps.GenerateAssistantResponseCommand({
+    conversationState: sdkPrep.conversationState,
+    profileArn: sdkPrep.profileArn,
+  });
+  const sdkResponse = await client.send(command);
+  const responseHandler = new deps.ResponseHandler();
+  const upstream = await responseHandler.handleSdkSuccess(
+    sdkResponse,
+    model,
+    sdkPrep.conversationId,
+    sdkPrep.streaming,
+    sdkPrep.toolNameMap,
+  );
+  const headers = {};
+  upstream.headers.forEach((v, k) => {
+    if (k.toLowerCase() === 'content-length') return;
+    headers[k] = v;
+  });
+  res.writeHead(upstream.status, headers);
+  if (!upstream.body) {
+    res.end(await upstream.text());
+    return;
+  }
+  Readable.fromWeb(upstream.body).pipe(res);
+}
+
 async function handleChat(req, res) {
   const body = await readBody(req);
   try {
@@ -137,6 +256,9 @@ async function handleChat(req, res) {
   } catch {
     return sendJson(res, 400, { error: { message: 'invalid JSON body', type: 'invalid_request_error' } });
   }
+
+  const apiKey = resolveApiKey();
+  if (apiKey) return handleApiKeyChat(res, body, apiKey);
 
   const s = await ensureReady();
   const kiroUrl = `https://q.${s.region}.amazonaws.com/v1/chat/completions`;
@@ -162,19 +284,26 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${HOST}:${PORT}`);
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      // Respond immediately; warm the provider in the background.
-      if (!state) void ensureReady().catch((e) => log('init failed:', e?.message || e));
+      const apiKey = resolveApiKey();
+      // Respond immediately; warm the OAuth provider in the background.
+      if (!apiKey && !state) void ensureReady().catch((e) => log('init failed:', e?.message || e));
       return sendJson(res, 200, {
         status: 'ok',
-        ready: !!state,
+        ready: apiKey ? true : !!state,
+        auth: apiKey ? 'api_key' : 'accounts',
         accounts: state ? state.accountManager.getAccountCount() : null,
-        region: state ? state.region : null,
+        region: state ? state.region : (apiKey ? 'api-key' : null),
       });
     }
     if (!authorized(req)) {
       return sendJson(res, 401, { error: { message: 'unauthorized', type: 'invalid_request_error' } });
     }
     if (req.method === 'GET' && (url.pathname === '/v1/models' || url.pathname === '/models')) {
+      const apiKey = resolveApiKey();
+      if (apiKey) {
+        const deps = await loadApiKeyDeps();
+        return sendJson(res, 200, modelList(deps.buildModelRegistry()));
+      }
       const s = await ensureReady();
       return sendJson(res, 200, modelList(s.registry));
     }

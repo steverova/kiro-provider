@@ -23,6 +23,7 @@ const BASE_URL = `http://${HOST}:${PORT}/v1`;
 const HEALTH_URL = `http://${HOST}:${PORT}/health`;
 const LOG_FILE = path.join(DIR, 'bridge.log');
 const KEY_FILE = path.join(DIR, 'api-key.txt');
+const API_KEY_FILE = path.join(DIR, 'kiro-api-key.txt');
 const NODE = process.env.KIRO_NODE || 'node';
 const PROVIDER_ID = 'kiro';
 
@@ -97,7 +98,7 @@ async function ensureBridge() {
     // windowsHide is ignored on Linux/macOS.
     stdio: ['ignore', out, out],
     windowsHide: true,
-    env: { ...process.env, KIRO_BRIDGE_TOKEN: TOKEN },
+    env: { ...process.env, KIRO_BRIDGE_TOKEN: TOKEN, ...(apiKey ? { KIRO_API_KEY: apiKey } : {}) },
   });
   child.on('error', (e) =>
     console.log('[kiro] spawn failed (' + e.message + '). Set KIRO_NODE to the node binary path.'),
@@ -105,6 +106,27 @@ async function ensureBridge() {
   child.unref();
   console.log('[kiro] started bridge (pid ' + child.pid + ')');
 }
+
+// Resolve the Kiro headless API key (ksk_...) connected through the `kiro`
+// integration, if any. Passing it to the bridge lets Kiro run without OAuth
+// accounts or kiro.db.
+async function resolveConnectedApiKey(ctx) {
+  try {
+    const connection = await ctx.integration.connection.active(PROVIDER_ID);
+    if (!connection) return null;
+    const credential = await ctx.integration.connection.resolve(connection);
+    const key =
+      typeof credential === 'string'
+        ? credential
+        : credential?.key || credential?.value || credential?.token || credential?.apiKey;
+    return typeof key === 'string' && key.trim() ? key.trim() : null;
+  } catch (e) {
+    console.log('[kiro] could not resolve API key: ' + (e?.message || e));
+    return null;
+  }
+}
+
+let apiKey = null;
 
 export default {
   id: 'kiro.provider',
@@ -121,6 +143,32 @@ export default {
         models: buildModels(),
       });
     });
+
+    // Register the `kiro` auth integration so a Kiro API key can be stored with
+    // `opencode auth login kiro --method key` (or /connect).
+    try {
+      await ctx.integration.transform((editor) => {
+        editor.update(PROVIDER_ID, (integration) => {
+          integration.name = spec.provider.name;
+        });
+        editor.method.update({
+          integrationID: PROVIDER_ID,
+          method: { id: 'key', type: 'key', label: 'Manually enter API Key' },
+        });
+      });
+    } catch (e) {
+      console.log('[kiro] integration registration failed: ' + (e?.message || e));
+    }
+
+    apiKey = await resolveConnectedApiKey(ctx);
+    if (apiKey) {
+      try {
+        fs.writeFileSync(API_KEY_FILE, apiKey + '\n', { mode: 0o600 });
+        console.log('[kiro] using connected API key');
+      } catch (e) {
+        console.log('[kiro] could not persist API key: ' + (e?.message || e));
+      }
+    }
 
     if (attempted) return;
     attempted = true;
