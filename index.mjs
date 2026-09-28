@@ -23,7 +23,6 @@ const BASE_URL = `http://${HOST}:${PORT}/v1`;
 const HEALTH_URL = `http://${HOST}:${PORT}/health`;
 const LOG_FILE = path.join(DIR, 'bridge.log');
 const KEY_FILE = path.join(DIR, 'api-key.txt');
-const API_KEY_FILE = path.join(DIR, 'kiro-api-key.txt');
 const NODE = process.env.KIRO_NODE || 'node';
 const PROVIDER_ID = 'kiro';
 
@@ -126,6 +125,22 @@ async function resolveConnectedApiKey(ctx) {
   }
 }
 
+// Hand the connected Kiro API key to the running bridge. The key is sent over
+// loopback and kept in the bridge's memory only — it is never written to disk.
+async function pushApiKey(key) {
+  try {
+    const res = await fetch(`http://${HOST}:${PORT}/internal/api-key`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ key }),
+    });
+    if (res.ok) console.log('[kiro] API key handed to bridge');
+    else console.log('[kiro] bridge rejected API key: HTTP ' + res.status);
+  } catch (e) {
+    console.log('[kiro] could not hand API key to bridge: ' + (e?.message || e));
+  }
+}
+
 let apiKey = null;
 
 export default {
@@ -160,18 +175,18 @@ export default {
       console.log('[kiro] integration registration failed: ' + (e?.message || e));
     }
 
+    // Migration: earlier versions wrote the Kiro API key to disk — remove it.
+    try {
+      fs.rmSync(path.join(DIR, 'kiro-api-key.txt'), { force: true });
+    } catch {}
+
     apiKey = await resolveConnectedApiKey(ctx);
-    if (apiKey) {
-      try {
-        fs.writeFileSync(API_KEY_FILE, apiKey + '\n', { mode: 0o600 });
-        console.log('[kiro] using connected API key');
-      } catch (e) {
-        console.log('[kiro] could not persist API key: ' + (e?.message || e));
-      }
+
+    if (!attempted) {
+      attempted = true;
+      await ensureBridge();
     }
 
-    if (attempted) return;
-    attempted = true;
-    await ensureBridge();
+    if (apiKey) await pushApiKey(apiKey);
   },
 };

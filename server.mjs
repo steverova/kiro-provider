@@ -24,20 +24,21 @@ const PORT = Number(process.env.KIRO_BRIDGE_PORT || 4141);
 const HOST = process.env.KIRO_BRIDGE_HOST || '127.0.0.1';
 const START_DIR = process.env.KIRO_PROJECT_DIR || DIR;
 const KEY_PATH = path.join(DIR, 'api-key.txt');
-const API_KEY_PATH = path.join(DIR, 'kiro-api-key.txt');
 
-// Kiro headless API key (prefixed "ksk_"). When present, the bridge
-// authenticates to Kiro with it instead of OAuth accounts, so no kiro.db is
-// needed. Read fresh on every request so `opencode auth login kiro` takes
-// effect without restarting the bridge.
+// Redact secrets (Kiro API keys, bridge keys) from anything we log or return.
+function redact(value) {
+  return String(value ?? '')
+    .replace(/ksk_[A-Za-z0-9._-]+/g, 'ksk_[redacted]')
+    .replace(/kiro-[A-Za-z0-9._-]{16,}/g, 'kiro-[redacted]');
+}
+
+// Kiro headless API key (prefixed "ksk_"). Held in memory only: seeded from
+// KIRO_API_KEY at startup and updated at runtime through the authenticated
+// /internal/api-key endpoint. It is never written to disk.
+let currentApiKey = (process.env.KIRO_API_KEY || '').trim() || null;
+
 function resolveApiKey() {
-  const fromEnv = (process.env.KIRO_API_KEY || '').trim();
-  if (fromEnv) return fromEnv;
-  try {
-    const fromFile = fs.readFileSync(API_KEY_PATH, 'utf8').trim();
-    if (fromFile) return fromFile;
-  } catch {}
-  return null;
+  return currentApiKey;
 }
 
 // Lazily loaded dependencies for the API-key path. Kept out of init() so the
@@ -66,7 +67,9 @@ function loadApiKeyDeps() {
   return apiKeyDepsPromise;
 }
 
-// One client per region+key; the API key is region-scoped.
+// One client per region+key; the API key is region-scoped. Bounded so a long
+// running bridge cannot accumulate clients.
+const MAX_CACHED_CLIENTS = 8;
 const apiKeyClients = new Map();
 function apiKeyClient(deps, apiKey, region) {
   const cacheKey = `${region}:${apiKey.slice(-8)}`;
@@ -90,14 +93,38 @@ function apiKeyClient(deps, apiKey, region) {
     },
     { step: 'build', name: 'apiKeyHeaders' },
   );
+  if (apiKeyClients.size >= MAX_CACHED_CLIENTS) {
+    const oldest = apiKeyClients.keys().next().value;
+    try {
+      apiKeyClients.get(oldest)?.destroy();
+    } catch {}
+    apiKeyClients.delete(oldest);
+  }
   apiKeyClients.set(cacheKey, client);
   return client;
 }
 
-const log = (...a) => console.log(new Date().toISOString(), ...a);
+// Replace the active Kiro API key at runtime (called by the plugin through the
+// authenticated /internal/api-key endpoint). Changing it drops cached clients
+// so the next request uses the new key.
+function setApiKey(key) {
+  const next = typeof key === 'string' && key.trim() ? key.trim() : null;
+  if (next === currentApiKey) return false;
+  currentApiKey = next;
+  for (const client of apiKeyClients.values()) {
+    try {
+      client.destroy();
+    } catch {}
+  }
+  apiKeyClients.clear();
+  return true;
+}
+
+const log = (...a) =>
+  console.log(new Date().toISOString(), ...a.map((v) => (typeof v === 'string' ? redact(v) : v)));
 const toast = (message, variant) => {
   if (variant === 'error') log(`[toast:${variant}] ${message}`);
-  else console.log(new Date().toISOString(), `[toast:${variant}] ${message}`);
+  else log(`[toast:${variant}] ${message}`);
 };
 
 // Accepted bearer tokens. api-key.txt may contain one or more keys (one per
@@ -172,17 +199,38 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
-function authorized(req) {
-  if (KEYS.size === 0) return true;
+function presentedTokens(req) {
   const auth = (req.headers['authorization'] || '').toString();
   const bearer = auth.replace(/^Bearer\s+/i, '').trim();
   const apiKey = (req.headers['x-api-key'] || req.headers['api-key'] || '').toString().trim();
-  const presented = [bearer, apiKey].filter(Boolean);
+  return [bearer, apiKey].filter(Boolean);
+}
+
+function authorized(req) {
+  if (KEYS.size === 0) return true;
+  const presented = presentedTokens(req);
   if (presented.some((token) => KEYS.has(token))) return true;
   // OpenCode attaches the connected Kiro API key as the provider credential, so
   // it can arrive here as the bearer instead of the generated bridge key.
   const kiroKey = resolveApiKey();
   return !!kiroKey && presented.includes(kiroKey);
+}
+
+// Fixed-window rate limit per presented token, to keep a runaway local client
+// from burning the Kiro quota. Set KIRO_BRIDGE_RATE_LIMIT=0 to disable.
+const RATE_LIMIT = Number(process.env.KIRO_BRIDGE_RATE_LIMIT ?? 120);
+const RATE_WINDOW_MS = 60_000;
+const rateBuckets = new Map();
+function rateLimited(token) {
+  if (!RATE_LIMIT || RATE_LIMIT <= 0) return false;
+  const now = Date.now();
+  const bucket = rateBuckets.get(token);
+  if (!bucket || now >= bucket.reset) {
+    rateBuckets.set(token, { count: 1, reset: now + RATE_WINDOW_MS });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT;
 }
 
 async function readBody(req) {
@@ -300,8 +348,25 @@ const server = http.createServer(async (req, res) => {
         region: state ? state.region : (apiKey ? 'api-key' : null),
       });
     }
+    if (req.method === 'POST' && url.pathname === '/internal/api-key') {
+      const token = presentedTokens(req)[0];
+      // Only the plugin's own bridge key may change the stored Kiro API key.
+      if (!token || !KEYS.has(token)) {
+        return sendJson(res, 401, { error: { message: 'unauthorized', type: 'invalid_request_error' } });
+      }
+      let key = null;
+      try {
+        key = JSON.parse(await readBody(req))?.key ?? null;
+      } catch {}
+      const changed = setApiKey(key);
+      log(`api key ${key ? 'set' : 'cleared'}${changed ? '' : ' (unchanged)'}`);
+      return sendJson(res, 200, { ok: true, changed, configured: !!resolveApiKey() });
+    }
     if (!authorized(req)) {
       return sendJson(res, 401, { error: { message: 'unauthorized', type: 'invalid_request_error' } });
+    }
+    if (url.pathname.startsWith('/v1') && rateLimited(presentedTokens(req)[0] || 'anon')) {
+      return sendJson(res, 429, { error: { message: 'rate limit exceeded', type: 'rate_limit_error' } });
     }
     if (req.method === 'GET' && (url.pathname === '/v1/models' || url.pathname === '/models')) {
       const apiKey = resolveApiKey();
@@ -318,7 +383,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}`, type: 'invalid_request_error' } });
   } catch (e) {
     log('request error:', e?.stack || e?.message || e);
-    const message = e?.message || String(e);
+    const message = redact(e?.message || String(e));
     if (res.headersSent) {
       try {
         res.end();
@@ -340,5 +405,8 @@ server.on('error', (e) => {
 
 server.listen(PORT, HOST, () => {
   log(`kiro bridge listening on http://${HOST}:${PORT}/v1`);
-  log(`auth: required — run "npm run key" to print the API key to paste in OpenCode`);
+  if (!['127.0.0.1', 'localhost', '::1'].includes(HOST)) {
+    log(`WARNING: KIRO_BRIDGE_HOST=${HOST} is not loopback — the bridge is reachable from the network`);
+  }
+  log(`auth: required (${KEYS.size} accepted key(s)); connect a Kiro API key with "opencode auth login kiro --method key"`);
 });

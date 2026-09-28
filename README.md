@@ -78,9 +78,8 @@ recommended.
    opencode reload
    ```
 
-The plugin reads the stored key, writes it next to the package
-(`kiro-api-key.txt`), and the bridge uses it for every request — no `kiro.db`
-needed. Verify:
+The plugin passes the key to the bridge **in memory** (over loopback only); it is
+never written to disk, and no `kiro.db` is needed. Verify:
 
 ```bash
 curl http://127.0.0.1:4141/health
@@ -133,6 +132,7 @@ Environment variables (optional):
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `KIRO_API_KEY` | – | Kiro API key (`ksk_...`); alternative to `auth login`. |
+| `KIRO_BRIDGE_RATE_LIMIT` | `120` | Max requests per minute per token (`0` disables). |
 | `KIRO_BRIDGE_PORT` | `4141` | Bridge port; must match the provider `baseURL`. |
 | `KIRO_BRIDGE_HOST` | `127.0.0.1` | Bind address. |
 | `KIRO_BRIDGE_TOKEN` | – | Extra accepted bridge key(s), comma/space separated. |
@@ -207,13 +207,13 @@ Run `opencode reload`, then connect your API key as in Authentication.
 - It registers the `kiro` auth integration with a `key` method, so
   `opencode auth login kiro --method key` (or `/connect`) can store a Kiro API
   key.
-- It resolves the stored key, and probes `/health`; if the bridge is down it
-  spawns `server.mjs` detached (surviving OpenCode closing), appending output to
-  `bridge.log`.
+- It resolves the stored key and hands it to the bridge in memory, then probes
+  `/health`; if the bridge is down it spawns `server.mjs` detached (surviving
+  OpenCode closing), appending output to `bridge.log`.
 - The bridge calls Kiro's CodeWhisperer endpoint and speaks the OpenAI Chat
   Completions API, including `reasoning_content` for thinking models.
   - **API key:** sends `Authorization: Bearer <ksk_...>` with the
-    `tokentype: API_KEY` header.
+    `tokentype: API_KEY` header. The key lives in the bridge's memory only.
   - **OAuth:** rotates and refreshes the accounts in `kiro.db`.
 
 ## Why this exists
@@ -226,10 +226,23 @@ Instead of porting it, this project **reuses its internals** (auth, account
 rotation, token refresh, request/stream translation) behind a small local
 OpenAI-compatible bridge, and wires it into OpenCode with a native V2 plugin.
 
+## Security
+
+- The Kiro API key is held **in memory only** in the bridge. The plugin sends it
+  over loopback (`127.0.0.1`) and it is never written to disk or logs.
+- Every `/v1/*` request requires a bearer token; `/internal/api-key` (used to
+  update the key) additionally requires the plugin's own bridge key.
+- Secrets are redacted from `bridge.log`.
+- The bridge binds to `127.0.0.1` by default. If you override
+  `KIRO_BRIDGE_HOST`, it logs a warning — never expose it to untrusted networks.
+- A per-token rate limit (`KIRO_BRIDGE_RATE_LIMIT`, default 120/min) protects
+  your Kiro quota from a runaway client.
+- If a Kiro API key may have leaked, rotate it at <https://app.kiro.dev>, then
+  `opencode auth logout` and `opencode auth login kiro --method key` again.
+
 ## Notes
 
-- `node_modules/`, `api-key.txt`, `kiro-api-key.txt` and `bridge.log` are
-  git-ignored. **Never commit `kiro-api-key.txt` or `api-key.txt`** — they hold
-  secrets.
+- `node_modules/`, `api-key.txt` and `bridge.log` are git-ignored. **Never commit
+  them** — `api-key.txt` is a local bridge secret.
 - Installing with `opencode plugin add` appends a single entry to your global
   `plugins` array; it never rewrites the rest of the configuration.
