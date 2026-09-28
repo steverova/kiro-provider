@@ -1,0 +1,5 @@
+node_modules/
+api-key.txt
+bridge.log
+*.log
+.DS_Store

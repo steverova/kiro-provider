@@ -1,0 +1,36 @@
+{
+  "name": "opencode-kiro-provider",
+  "version": "1.0.0",
+  "description": "OpenCode V2 plugin + local bridge that exposes AWS Kiro (CodeWhisperer) models as a custom provider.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "models.json",
+    "server.mjs",
+    "key.mjs",
+    "login.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node server.mjs",
+    "key": "node key.mjs",
+    "login": "node login.mjs",
+    "gen-models": "node gen-models.mjs",
+    "gen-config": "node gen-config.mjs",
+    "spike": "node spike.mjs"
+  },
+  "opencode": {
+    "type": "plugin"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "@zhafron/opencode-kiro-auth": "^2.0.0"
+  }
+}
