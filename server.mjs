@@ -177,7 +177,12 @@ function authorized(req) {
   const auth = (req.headers['authorization'] || '').toString();
   const bearer = auth.replace(/^Bearer\s+/i, '').trim();
   const apiKey = (req.headers['x-api-key'] || req.headers['api-key'] || '').toString().trim();
-  return KEYS.has(bearer) || KEYS.has(apiKey);
+  const presented = [bearer, apiKey].filter(Boolean);
+  if (presented.some((token) => KEYS.has(token))) return true;
+  // OpenCode attaches the connected Kiro API key as the provider credential, so
+  // it can arrive here as the bearer instead of the generated bridge key.
+  const kiroKey = resolveApiKey();
+  return !!kiroKey && presented.includes(kiroKey);
 }
 
 async function readBody(req) {
