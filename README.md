@@ -23,26 +23,24 @@ OpenCode V2 ──(OpenAI /v1/chat/completions)──▶ bridge (127.0.0.1:4141)
    └── plugin registers provider + starts bridge  └─▶ AWS Kiro (CodeWhisperer)
 ```
 
-## Install from GitHub / npm (recommended)
+## Install from GitHub (recommended)
 
 ```bash
-# from GitHub
-opencode plugin add github:<user>/<repo>
-
-# or from npm, if published
-opencode plugin add opencode-kiro-provider
+opencode plugin add github:steverova/kiro-provider
 ```
+
+That command **only adds** this plugin to the `plugins` array in your global
+`~/.config/opencode/opencode.json`; it never replaces the rest of your config.
 
 OpenCode downloads the package (with dependencies) into its cache and loads it.
-Then connect the provider once:
+Reload so the plugin activates:
 
 ```bash
-opencode auth login kiro --method key
+opencode reload
 ```
 
-Paste one of the keys printed by `npm run key` (run it inside the installed
-package directory, see below). In the TUI: `/connect` → **AWS Kiro** →
-*Manually enter API Key*. Pick a model with `/models` — you'll see `kiro/...`.
+The plugin registers the `kiro` provider with its own bridge API key, so there
+is no manual `/connect` step. Pick a model with `/models` — you'll see `kiro/...`.
 
 No manual `opencode.json` edits and nothing extra to keep running: the bridge is
 spawned automatically when OpenCode starts.
@@ -57,21 +55,24 @@ The generated API key lives there in `api-key.txt`; the bridge log is
 ## Install from a local clone (alternative)
 
 ```powershell
-git clone <your-repo-url> kiro-provider
+git clone https://github.com/steverova/kiro-provider.git kiro-provider
 cd kiro-provider
 npm install
-npm run gen-config   # registers this plugin; removes any old providers.kiro
 ```
 
-```bash
-git clone <your-repo-url> kiro-provider
-cd kiro-provider
-npm install
-npm run gen-config
+Then add the folder to `plugins` in your global `opencode.json` (this preserves
+every other setting — it only appends one entry):
+
+```json
+{
+  "plugins": [
+    "C:/Users/you/Documents/kiro-provider"
+  ]
+}
 ```
 
-Then `opencode reload` and connect the provider as above. `npm start` runs the
-bridge manually if you don't want the plugin to spawn it.
+Run `opencode reload`. `npm start` runs the bridge manually if you don't want
+the plugin to spawn it.
 
 ## Requirements
 
@@ -92,7 +93,6 @@ bridge manually if you don't want the plugin to spawn it.
 | `server.mjs` | Local OpenAI-compatible bridge backed by the Kiro plugin internals. |
 | `models.json` | Model metadata (generated), so the plugin never imports SQLite. |
 | `gen-models.mjs` | Regenerates `models.json` from the Kiro registry. |
-| `gen-config.mjs` | Optional: registers the plugin in `opencode.json` for local clones. |
 | `key.mjs` / `login.mjs` | Print the API key / run the OpenCode login. |
 | `spike.mjs` | Quick check that the plugin internals work standalone. |
 
@@ -110,9 +110,10 @@ bridge manually if you don't want the plugin to spawn it.
 ### API key
 
 The bridge requires a bearer key on every `/v1/*` request (except `/health`).
-Accepted keys live in `api-key.txt` next to the installed package (one per line,
-auto-generated on first run). Put your own key there (for example your `ksk_...`
-Kiro key) and paste the same value at `opencode auth login kiro --method key`.
+The plugin generates one on first run and stores it in `api-key.txt` next to the
+installed package, then uses it for both the provider and the bridge, so no
+manual step is needed. To use your own key instead, put it in `api-key.txt` (one
+per line, for example your `ksk_...` Kiro key).
 
 The bridge authenticates to Kiro with the accounts in `kiro.db`; the API key
 only gates access to the local bridge.
@@ -128,7 +129,7 @@ Environment variables (optional):
 | `KIRO_BRIDGE_TOKEN` | – | Extra accepted key(s), comma/space separated. |
 | `KIRO_PROJECT_DIR` | package dir | Directory used for project-level `kiro.json`. |
 | `KIRO_NODE` | `node` | Node binary used to spawn the bridge. |
-| `XDG_CONFIG_HOME` | `~/.config` | Config location used by `gen-config.mjs`. |
+| `XDG_CONFIG_HOME` | `~/.config` | Config location OpenCode reads (`$XDG_CONFIG_HOME/opencode`). |
 
 ## Models
 
@@ -147,16 +148,16 @@ Edit `DISABLED_MODELS` in `gen-models.mjs`, run `npm run gen-models`, and commit
 ## Cross-platform notes
 
 - All paths derive from the plugin file and the user's home directory.
-- `gen-config.mjs` writes to `$XDG_CONFIG_HOME/opencode/opencode.json` when set,
+- The global config lives at `$XDG_CONFIG_HOME/opencode/opencode.json` when set,
   otherwise `~/.config/opencode/opencode.json` (OpenCode's location on all three
-  platforms).
+  platforms). `opencode plugin add` only appends to its `plugins` array.
 - `windowsHide` is ignored on Linux/macOS.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
-| `401 Unauthorized` | The key you logged in with is not in `api-key.txt`. Add it or re-login with `npm run key`. |
+| `401 Unauthorized` | The key the provider sends is not in `api-key.txt`. Add it there or run `npm run key`. |
 | Provider missing / 0 models | `opencode reload`, and check the plugin loaded (`opencode plugin list`). |
 | `Kiro Error: 400/403` | Account problem in `kiro.db`. Re-login the V1 plugin or `kiro-cli login` (may need a `profileArn`). |
 | Bridge unreachable | `curl http://127.0.0.1:4141/health`; check `bridge.log`. |
@@ -168,5 +169,5 @@ Edit `DISABLED_MODELS` in `gen-models.mjs`, run `npm run gen-models`, and commit
 - `node_modules/`, `api-key.txt` and `bridge.log` are git-ignored. **Never commit
   `api-key.txt`** — it holds your key.
 - To publish to npm: `npm publish` (the `files` list ships only what's needed).
-- `gen-config.mjs` replaces any previous Kiro plugin entry and removes the legacy
-  `providers.kiro`, so migrating from the old config-based setup is one command.
+- Installing with `opencode plugin add` appends a single entry to your global
+  `plugins` array; it never rewrites the rest of the configuration.
