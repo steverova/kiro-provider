@@ -1,16 +1,43 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+// Locations where the Kiro CLI may store its credential database, in probe
+// order. Newer CLI builds (>= 2.x) on Windows use `%LOCALAPPDATA%\Kiro-Cli`,
+// while older ones used `%APPDATA%\kiro-cli` — checking only one of them left
+// `kiro.db` empty (and the bridge answering 401 "no accounts") whenever the CLI
+// and the bridge disagreed about the path. The final entry per platform is the
+// historical default, returned when no candidate exists so behaviour is
+// unchanged on a machine without the CLI.
+function cliDbCandidates() {
+    const p = platform();
+    if (p === 'win32') {
+        const local = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+        const roaming = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
+        return [
+            join(local, 'Kiro-Cli', 'data.sqlite3'),
+            join(local, 'kiro-cli', 'data.sqlite3'),
+            join(roaming, 'Kiro-Cli', 'data.sqlite3'),
+            join(roaming, 'kiro-cli', 'data.sqlite3'),
+        ];
+    }
+    if (p === 'darwin') {
+        const support = join(homedir(), 'Library', 'Application Support');
+        return [join(support, 'Kiro-Cli', 'data.sqlite3'), join(support, 'kiro-cli', 'data.sqlite3')];
+    }
+    const share = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
+    return [join(share, 'kiro-cli', 'data.sqlite3'), join(share, 'Kiro-Cli', 'data.sqlite3')];
+}
 export function getCliDbPath() {
     const override = process.env.KIROCLI_DB_PATH;
     if (override)
         return override;
-    const p = platform();
-    if (p === 'win32')
-        return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'kiro-cli', 'data.sqlite3');
-    if (p === 'darwin')
-        return join(homedir(), 'Library', 'Application Support', 'kiro-cli', 'data.sqlite3');
-    return join(homedir(), '.local', 'share', 'kiro-cli', 'data.sqlite3');
+    const candidates = cliDbCandidates();
+    for (const candidate of candidates) {
+        if (existsSync(candidate))
+            return candidate;
+    }
+    return candidates[candidates.length - 1];
 }
 export function safeJsonParse(value) {
     if (typeof value !== 'string')
